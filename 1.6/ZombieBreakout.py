@@ -7,7 +7,7 @@
 #<METADATA>
 QUIET_VERSION = "0.1"
 PROBLEM_NAME = "ZombieBreakout"
-PROBLEM_VERSION = "1.3"
+PROBLEM_VERSION = "1.6"
 PROBLEM_AUTHORS = ['T. Luo, Y. Zheng']
 PROBLEM_CREATION_DATE = "24-May-2016"
 PROBLEM_DESC=\
@@ -27,14 +27,19 @@ DIST_SIZE = 16
 LENGTH = int(math.sqrt(DIST_SIZE))
 DIST_POPULATION = 100
 DOMINATION_RATE = 0.9
-# less is more powerful, 1 is maximum.
+# less is more powerful
 HUMAN_ATTACK_POWER = 8
-HUMAN_DEFENCE_POWER = 0.25
-# adjust zombie's infection ability:
-ZOMBIE_INFECTION_RATE = 1
+ATTACK_INCREASE_RATE = 0.3
+# larger is more powerful
+HUMAN_DEFENCE_POWER = 1
+DEFENCE_INCREASE_RATE = 0.1
 # infected human zombify rate:
 ZOMBIFY_RATE = 80
-TIME_LIMIT = 4*365
+ZOMBIFY_DECREASE_RATE = 4
+# adjust zombie's infection ability:
+ZOMBIE_INFECTION_RATE = 1
+# adjust turn limit
+TIME_LIMIT = 2*365
 #</PARAMETER>
 
 #<COMMON_CODE>
@@ -68,6 +73,7 @@ def dist_info(state,dist):
 		if i == 5:
 			output_string +=   str(state[dist][i]) + ")"
 	return output_string
+
 
 
 def DESCRIBE_STATE(state):
@@ -113,7 +119,7 @@ def goal_message(s):
 	return "human won!"
 
 def dist_str(dist_num):
-	return "Dist"+str(dist_num)
+	return "Dist" + str(dist_num)
 
 # operator class
 class Operator:
@@ -146,6 +152,7 @@ def zombie_action(s):
 	# attack phase: (coef(in,out):1.3,0.2)
 	for dist in range(DIST_SIZE):
 		human, infected, zombie = new_state[dist_str(dist)][:3]
+		defence_power =  new_state[dist_str(dist)][4]
 		# in dist zombie
 		attack_ability = zombie
 		# out dist zombie
@@ -153,17 +160,18 @@ def zombie_action(s):
 			attack_ability += int(new_state[dist_str(neighbor)][2] * 0.20)
 
 		attack_limit = int(min(human, attack_ability*ZOMBIE_INFECTION_RATE))
-		new_state[dist_str(dist)][0] -= attack_limit
-		new_state[dist_str(dist)][1] += attack_limit
+		new_state[dist_str(dist)][0] -= int(attack_limit/defence_power)
+		new_state[dist_str(dist)][1] += int(attack_limit/defence_power)
 
 	# infecteds zombify
 	for dist in range(DIST_SIZE):
 		infected = new_state[dist_str(dist)][1]
 		zombify_rate = new_state[dist_str(dist)][5]
 		if infected > 0:
-			zombified = int(infected*(random.randint(zombify_rate-15,zombify_rate+15)/100))
-			new_state[dist_str(dist)][1] -= zombified
-			new_state[dist_str(dist)][2] += zombified
+			zombified_ability = int(infected*(random.randint(zombify_rate-15,zombify_rate+15)/100))
+			zombified_limit = min(infected, zombified_ability)
+			new_state[dist_str(dist)][1] -= zombified_limit
+			new_state[dist_str(dist)][2] += zombified_limit
 
 	return new_state
 
@@ -193,22 +201,28 @@ def attack(s, dist_num):
 	# non human-dominated state could only attack within dist
 	# attack inside the dist & human will be infected
 	if dominated_by(s,dist_num) == "mixed":
-		human, infected, zombie, attack_power = new_state[dist_str(dist_num)][:4]
-		attack_ability = (human + infected) // (attack_power - 1)
+		human, infected, zombie, attack_power, defence_power = new_state[dist_str(dist_num)][:5]
+		attack_ability = int((human + infected) / (attack_power - 1))
 		attack_limit = min(attack_ability, human, zombie)
-		new_state[dist_str(dist_num)][1] += attack_limit
-		new_state[dist_str(dist_num)][0] -= attack_limit
+		new_state[dist_str(dist_num)][1] += int(attack_limit/defence_power)
+		new_state[dist_str(dist_num)][0] -= int(attack_limit/defence_power)
 		new_state[dist_str(dist_num)][2] -= attack_limit
  	
-	# human-dominated dist could attack all adjacent dist with zombies
+	# human-dominated dist could attack a random adjacent dist with zombies
 	# less powerful, no human infected
 	else:
-		human1, infected1, zombie1, attack_power1 = new_state[dist_str(dist_num)][:4]
-		attack_ability = (human1 + infected1) // (attack_power1 + 2)
+		human1, infected1, zombie1, attack_power1, defence_power1 = new_state[dist_str(dist_num)][:5]
+		attack_ability = int((human1 + infected1) // (attack_power1 + 2))
+		attack_dist = []
 		for neighbor in neighbors(dist_num):
 			human2, infected2, zombie2 = new_state[dist_str(neighbor)][:3]
 			attack_limit = min(attack_ability, zombie2)
-			new_state[dist_str(neighbor)][2] -= attack_limit
+			if attack_limit != 0:
+				attack_dist.append((neighbor, attack_limit))
+		# if there are some neighbors need help, randomly choose one to help
+		if len(attack_dist) != 0:
+			attack_dist, limit = random.choice(attack_dist)
+			new_state[dist_str(attack_dist)][2] -= limit
 		
 	# after every attack, zombie attack back and infected will become zombies
 	# dominated_dist will elimate all other races(optional)
@@ -221,24 +235,25 @@ def can_attack(s,dist_num):
 	#  if dominated by zombie, cannot attack
 	if dominated_by(s,dist_num) == "zombie": return 0
 	# mixed dist,  zombie in dist, can attack:
-	elif dominated_by(s,dist_num) == "mixed": return 100
+	elif dominated_by(s,dist_num) == "mixed": return 2*s[dist_str(dist_num)][2]
 	# human-domi dist, check neighbors have zombie
 	else:
-		eval_score = 0
+		eval_score = 1
 		for neighbor in neighbors(dist_num):
 			if dominated_by(s, neighbor) != "human":
-				eval_score += 50
+				eval_score += 35
 		return eval_score
 
 def upgrade_wall(s,dist_num):
 	new_state = copy_state(s)
 	current_defence_power = new_state[dist_str(dist_num)][4]
-	new_state[dist_str(dist_num)][4] = current_defence_power + 0.3
+	new_state[dist_str(dist_num)][4] = current_defence_power + DEFENCE_INCREASE_RATE
 	return new_state
 
 def can_upgrade_wall(s,dist_num):
 	if dominated_by(s,dist_num) == "zombie": return 0
-	elif dominated_by(s,dist_num) == "mixed": return 20
+	elif s[dist_str(dist_num)][4] > 9: return 0 
+	elif dominated_by(s,dist_num) == "mixed": return 25
 	else:
 		eval_score = 0
 		for neighbor in neighbors(dist_num):
@@ -247,17 +262,16 @@ def can_upgrade_wall(s,dist_num):
 
 		return eval_score
 
-
 def develop_weapon(s,dist_num):
 	new_state = copy_state(s)
 	current_attack_power = new_state[dist_str(dist_num)][3]
-	new_state[dist_str(dist_num)][4] = current_attack_power - 0.2
+	new_state[dist_str(dist_num)][3] = current_attack_power - ATTACK_INCREASE_RATE
 	return new_state
 
 def can_develop_weapon(s,dist_num):
 	if dominated_by(s,dist_num) == "zombie": return 0
 	elif s[dist_str(dist_num)][3] <= 3: return 0
-	elif dominated_by(s,dist_num) == "mixed": return 20
+	elif dominated_by(s,dist_num) == "mixed": return 25
 	else:
 		eval_score = 0
 		for neighbor in neighbors(dist_num):
@@ -268,13 +282,13 @@ def can_develop_weapon(s,dist_num):
 def develop_medicine(s,dist_num):
 	new_state = copy_state(s)
 	current_zombify_rate = new_state[dist_str(dist_num)][5]
-	new_state[dist_str(dist_num)][5] = current_zombify_rate - 1
+	new_state[dist_str(dist_num)][5] = current_zombify_rate - ZOMBIFY_DECREASE_RATE
 	return new_state
 
 def can_develop_medicine(s,dist_num):
 	if dominated_by(s,dist_num) == "zombie": return 0
 	elif s[dist_str(dist_num)][5] <= 20: return 0
-	elif dominated_by(s,dist_num) == "mixed": return 20
+	elif dominated_by(s,dist_num) == "mixed": return 25
 	else:
 		eval_score = 0
 		for neighbor in neighbors(dist_num):
@@ -293,31 +307,32 @@ def Q(s,dist,action):
 
 def dist_operator_fomulator(s):
 	# help each state choose an action and take action
-	new_state = copy_state(s)
-	
+	new_state = copy_state(s)	
+	new_state = domination(s)
 	state_score = 0
 	for dist in range(DIST_SIZE):
-		best_action = []
-		dist_max_score = -10000
-		for action in action_name:
-			dist_score = Q(new_state,dist,action)
-			if dist_score == dist_max_score:
-				best_action.append(action)
-			elif dist_score > dist_max_score:
-				best_action = []
-				best_action.append(action)
-				dist_max_score = dist_score
+		if dominated_by(s,dist) != "zombie":
+			best_action = []
+			dist_max_score = -1
+			for action in action_name:
+				dist_score = Q(new_state,dist,action)
+				if dist_score == dist_max_score:
+					best_action.append(action)
+				elif dist_score > dist_max_score:
+					best_action = []
+					best_action.append(action)
+					dist_max_score = dist_score
 
-		# take the best action
-		action_number = len(best_action)
-		if  action_number == 1:
-			new_state = action_function[action_name.index(best_action[0])](new_state,dist)
-		# if there are more than one best actions, take an random choice
-		elif action_number > 1:
-			current_best_action = random.choice(best_action)
-			new_state = action_function[action_name.index(current_best_action)](new_state,dist)
-	
-		state_score += dist_max_score
+			# take the best action
+			action_number = len(best_action)
+			if  action_number == 1:
+				new_state = action_function[action_name.index(best_action[0])](new_state,dist)
+			# if there are more than one best actions, take an random choice
+			elif action_number > 1:
+				current_best_action = random.choice(best_action)
+				new_state = action_function[action_name.index(current_best_action)](new_state,dist)
+
+			state_score += dist_max_score
 
 	new_state = zombie_action(new_state) 
 	# print(state_score)
@@ -328,7 +343,7 @@ def valid_operator(s):
 
 OPERATORS = [Operator("Operator",
 				lambda s: valid_operator(s),
-				lambda s: dist_operator_fomulator(s))]
+				lambda s: dist_operator_fomulator(s)) for i in range(10)]
 
 #</OPERATORS>
 
@@ -336,6 +351,7 @@ OPERATORS = [Operator("Operator",
 def CREATE_INITIAL_STATE():
 	#default1.0: 100 human per dist. Outbreak dist has 100 zombies
 	initial_state = {}
+	#zombie_dist1 = 5
 	zombie_dist1 = random.randint(0, DIST_SIZE-1)
 	for i in range(DIST_SIZE):
 		if i == zombie_dist1: initial_state["Dist"+str(i)] = [0,0,DIST_POPULATION,HUMAN_ATTACK_POWER,HUMAN_DEFENCE_POWER,ZOMBIFY_RATE]
@@ -382,4 +398,4 @@ def test():
 	i_s = CREATE_INITIAL_STATE()
 	DESCRIBE_STATE(i_s)
 
- test()
+ #test()
